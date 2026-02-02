@@ -119,6 +119,53 @@ def looks_like_address(text):
     return sum([has_zip, has_state, has_street]) >= 2
 
 
+def extract_text_from_html(html_snippet):
+    """Remove HTML tags and clean up text."""
+    text = re.sub(r'<[^>]+>', ' ', html_snippet)
+    text = ' '.join(text.split())
+    return text
+
+
+def extract_footer_content(html_content):
+    """Extract content from footer sections."""
+    footer_content = []
+
+    # Match <footer> tags
+    footer_tag_pattern = re.compile(r'<footer[^>]*>(.*?)</footer>', re.IGNORECASE | re.DOTALL)
+    footer_content.extend(footer_tag_pattern.findall(html_content))
+
+    # Match elements with footer-related class or id
+    footer_class_pattern = re.compile(
+        r'<(?:div|section|nav)[^>]*(?:class|id)=["\'][^"\']*footer[^"\']*["\'][^>]*>(.*?)</(?:div|section|nav)>',
+        re.IGNORECASE | re.DOTALL
+    )
+    footer_content.extend(footer_class_pattern.findall(html_content))
+
+    return footer_content
+
+
+def extract_location_context(html_content):
+    """Extract text surrounding 'located' or 'location' keywords."""
+    location_texts = []
+
+    # Remove HTML tags but preserve structure for context extraction
+    text_content = extract_text_from_html(html_content)
+
+    # Find sentences/phrases containing location keywords
+    location_pattern = re.compile(
+        r'[^.]*\b(?:located|location|headquarters|headquartered|office)\b[^.]*\.?',
+        re.IGNORECASE
+    )
+
+    matches = location_pattern.findall(text_content)
+    for match in matches:
+        cleaned = match.strip()
+        if len(cleaned) > 20 and len(cleaned) < 300:
+            location_texts.append(cleaned)
+
+    return location_texts
+
+
 def extract_addresses(html_content):
     """Extract mailing addresses from page content."""
     addresses = set()
@@ -141,10 +188,41 @@ def extract_addresses(html_content):
     # Also look for <address> tags content
     address_tag_pattern = re.compile(r'<address[^>]*>(.*?)</address>', re.IGNORECASE | re.DOTALL)
     for match in address_tag_pattern.findall(html_content):
-        text = re.sub(r'<[^>]+>', ' ', match)
-        text = ' '.join(text.split())
+        text = extract_text_from_html(match)
         if looks_like_address(text) and len(text) < 200:
             addresses.add(text)
+
+    # Search footer sections for addresses
+    footer_sections = extract_footer_content(html_content)
+    for footer_html in footer_sections:
+        footer_text = extract_text_from_html(footer_html)
+        # Check if footer text looks like an address
+        if looks_like_address(footer_text):
+            # Try to extract just the address portion
+            found_in_footer = address_pattern.findall(footer_html)
+            for addr in found_in_footer:
+                cleaned = ' '.join(addr.split())
+                if len(cleaned) > 15 and len(cleaned) < 200:
+                    addresses.add(cleaned)
+        # Also check for address tags within footer
+        for match in address_tag_pattern.findall(footer_html):
+            text = extract_text_from_html(match)
+            if looks_like_address(text) and len(text) < 200:
+                addresses.add(text)
+
+    # Search near "located" or "location" keywords
+    location_contexts = extract_location_context(html_content)
+    for context in location_contexts:
+        if looks_like_address(context):
+            # Try to extract the address portion from the context
+            context_addresses = address_pattern.findall(context)
+            for addr in context_addresses:
+                cleaned = ' '.join(addr.split())
+                if len(cleaned) > 15 and len(cleaned) < 200:
+                    addresses.add(cleaned)
+            # If no pattern match but looks like address, add the whole context
+            if not context_addresses and len(context) < 150:
+                addresses.add(context)
 
     return list(addresses)[:5]
 
